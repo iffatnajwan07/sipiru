@@ -1,0 +1,77 @@
+name: peminjaman-ruang-usk
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+  image: peminjaman-ruang-usk-app:latest
+  volumes:
+    - ./:/var/www/html
+  depends_on:
+    mysql:
+      condition: service_healthy
+  networks: [usk]
+  restart: unless-stopped
+
+services:
+  app:
+    <<: *app
+
+  queue:
+    <<: *app
+    command: ["wait-for-vendor", "php", "artisan", "queue:work", "--tries=3", "--backoff=30", "--sleep=3"]
+
+  scheduler:
+    <<: *app
+    command: ["wait-for-vendor", "php", "artisan", "schedule:work"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${APP_PORT:-80}:80"
+    volumes:
+      - ./:/var/www/html:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [app]
+    networks: [usk]
+    restart: unless-stopped
+
+  mysql:
+    image: mariadb:10.11
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-peminjaman_usk}
+      MYSQL_USER: ${DB_USERNAME:-usk}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-change_me}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change_me_root}
+      TZ: Asia/Jakarta
+    ports:
+      - "127.0.0.1:${FORWARD_DB_PORT:-33060}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/mysql/my.cnf:/etc/mysql/conf.d/app.cnf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [usk]
+    restart: unless-stopped
+
+  # SMTP penangkap email untuk development (UI: http://localhost:8025).
+  # Production: hapus service ini dan isi MAIL_* dengan SMTP asli.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:${FORWARD_MAILPIT_UI_PORT:-8025}:8025"
+    networks: [usk]
+    restart: unless-stopped
+
+networks:
+  usk:
+
+volumes:
+  mysql-data:
